@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
+#include "FastNoise/Utility/SmartNode.h"
 #include "GLDebug.h"
 #include "GLDebug.cpp"
 #include <glm/gtc/matrix_transform.hpp>
@@ -20,12 +21,16 @@
 #include "stb_image.h"
 #include "stb_image.cpp"
 #include "ShaderReader.h"
+#include "textureMap.cpp"
+#include "noiseGeneration.cpp"
+
 
 static int WIDTH = 800;
 static int HEIGHT = 600;
 static float deltaTime;
 static float lastFrame;
 static glm::vec3 WorldUp = glm::vec3(0.0f, 1.0f, 0.0f);
+
 
 
 float cubeVertices[] = {
@@ -90,11 +95,12 @@ enum Block
     AIR = 0,
     GRASS,
     DIRT,
-    STONE
+    STONE,
+    SAND
 };
 
 const int CHUNK_X = 16;
-const int CHUNK_Y = 256;
+const int CHUNK_Y = 64;
 const int CHUNK_Z = 16;
 const int BLOCK_COUNT = CHUNK_X * CHUNK_Y * CHUNK_Z;
 
@@ -158,7 +164,7 @@ enum Face {
 struct Camera
 {
     //Positions
-    glm::vec3 cameraPos = glm::vec3(16.0f, 80.0f, 50.0f);
+    glm::vec3 cameraPos = glm::vec3(0.0f, 64.0f, 32.0f);
     glm::vec3 DirectionFront = glm::vec3(0.0f, -0.2f, -1.0f);
     glm::vec3 DirectionUp = glm::vec3(0.0f, 1.0f, 0.0f);
     glm::vec3 DirectionRight = glm::vec3(1.0f, 0.0f, 0.0f);
@@ -185,7 +191,7 @@ void mouse_callback(GLFWwindow* window, double xpos, double ypos);
 constexpr int blockIndex(int x, int y, int z);
 Block& getBlock(Chunk& chunk, int x, int y, int z);
 const Block& getBlock(const Chunk& chunk, int x, int y, int z);
-void appendFace( std::vector<Vertex> &meshVertices, const float cubeVertices[], int faceIndex, float blockX, float blockY, float blockZ);
+void appendFace( std::vector<Vertex> &meshVertices, const float cubeVertices[], int faceIndex, float blockX, float blockY, float blockZ, const TextureRegion &region);
 void renderWorld(const World &world);
 void uploadMesh(Chunk &chunk, const std::vector<Vertex> &vertices);
 void buildChunkMesh(const World &world, const Chunk &chunk, std::vector<Vertex> &vertices);
@@ -193,6 +199,7 @@ bool isTransparent(Block block);
 Block getWorldBlock(const World &world, int worldX, int worldY, int worldZ);
 void generateChunk(Chunk &chunk);
 float terrainHeight(int worldX, int worldZ);
+TextureRegion getFaceTexture(Block block, Face face);
 
 
 int main()
@@ -221,7 +228,9 @@ int main()
         return -1;
     }
 
-    const int NUM_CHUNKS = 6;
+    initNoise();
+
+    const int NUM_CHUNKS = 2;
 
     for (int chunkZ = 0; chunkZ < NUM_CHUNKS; ++chunkZ)
     {
@@ -247,6 +256,7 @@ int main()
         chunk.needsMeshRebuild = false;
     }
 
+
     Shader shader(SHADER_DIR"shader.vs", SHADER_DIR"shader.fs");
 
     /*
@@ -257,16 +267,16 @@ int main()
     glBindVertexArray(VAO);
     glBindBuffer(GL_ARRAY_BUFFER, VBO);
 
-    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(cubeVertices), cubeVertices, GL_STATIC_DRAW);
     //glBufferData(GL_ARRAY_BUFFER, sizeof(myVertices), myVertices, GL_STATIC_DRAW);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5*sizeof(float), (void*)0);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5*sizeof(float), (void*)(3*sizeof(float)));
     glEnableVertexAttribArray(1);
-
     */
 
-    GLuint texture = loadTexture(TEXTURE_DIR"grass.jpg");
+
+    GLuint texture = loadTexture(TEXTURE_DIR"textureAtlas.png");
     shader.setInt("texture1", 0);
     glEnable(GL_DEPTH_TEST);
     glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
@@ -285,6 +295,10 @@ int main()
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         shader.use();
+
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, texture);
+
         glm::mat4 projection = glm::perspective(
                 glm::radians(camera.zoom),
                 (float)WIDTH/(float)HEIGHT,
@@ -333,10 +347,10 @@ unsigned int loadTexture(char const* path)
         glGenerateMipmap(GL_TEXTURE_2D);
 
         //parameters
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     }
     stbi_image_free(data);
     return texture;
@@ -416,6 +430,7 @@ const Block& getBlock(const Chunk& chunk, int x, int y, int z)
 
 float terrainHeight(int worldX, int worldZ)
 {
+    /*
     float nx = worldX * 0.01f;
     float nz = worldZ * 0.01f;
 
@@ -425,6 +440,17 @@ float terrainHeight(int worldX, int worldZ)
         std::sin((nx + nz) * 0.4f) + 4.0f;
 
     return 64.0f + value;
+    */
+    float nx = worldX * 0.005f;
+    float nz = worldZ * 0.005f;
+
+    float value = NoiseGenerator::terrainNoise->GenSingle2D(nx, nz, 2);
+    value = (value + 1.f) * 0.5f;
+
+    const float baseHeight = 64.0f;
+    const float amplitude = 40.0f;
+    return baseHeight + value * amplitude;
+
 }
 
 //TODO(ullr): Implement real noise implementation
@@ -446,6 +472,15 @@ void generateChunk(Chunk &chunk)
                 if (y < height - 4) {block = STONE;}
                 else if (y < height - 1) {block = DIRT;}
                 else if (y == height - 1) {block = GRASS;}
+
+                //carving caves only into solid blocks below surface
+                if (block != AIR &&
+                    y >= 8 &&
+                    y < height - 5 &&
+                    isCave(worldX, y, worldZ))
+                {
+                    block = AIR;
+                }
 
                 getBlock(chunk, x, y, z) = block;
             }
@@ -476,17 +511,18 @@ Block getWorldBlock(const World &world, int worldX, int worldY, int worldZ)
     return getBlock(it->second, localX, worldY, localZ);
 }
 
-//Meshing functions
+//Render and Meshing functions
 bool isTransparent(Block block)
 {
     return block == AIR;
 }
 
-
 //NOTE(ullr): Can create a Struct of vertex to store position, normal, texture and blocktype instead of flat array
 void buildChunkMesh(const World &world, const Chunk &chunk, std::vector<Vertex> &vertices)
 {
     vertices.clear();
+
+    static bool debugRenderAllFaces = false;
 
     for (int y = 0; y < CHUNK_Y; ++y)
     {
@@ -502,12 +538,40 @@ void buildChunkMesh(const World &world, const Chunk &chunk, std::vector<Vertex> 
                 int worldX = chunk.chunkX * CHUNK_X + x;
                 int worldZ = chunk.chunkZ * CHUNK_Z + z;
 
+                if (debugRenderAllFaces)
+                {
+                    appendFace(vertices, cubeVertices, Front,
+                               worldX, y, worldZ,
+                               getFaceTexture(block, Front));
+
+                    appendFace(vertices, cubeVertices, Back,
+                               worldX, y, worldZ,
+                               getFaceTexture(block, Back));
+
+                    appendFace(vertices, cubeVertices, Left,
+                               worldX, y, worldZ,
+                               getFaceTexture(block, Left));
+
+                    appendFace(vertices, cubeVertices, Right,
+                               worldX, y, worldZ,
+                               getFaceTexture(block, Right));
+
+                    appendFace(vertices, cubeVertices, Bottom,
+                               worldX, y, worldZ,
+                               getFaceTexture(block, Bottom));
+
+                    appendFace(vertices, cubeVertices, Top,
+                               worldX, y, worldZ,
+                               getFaceTexture(block, Top));
+                }
+                else {
+
                  if (isTransparent(
                         getWorldBlock(world, worldX, y, worldZ - 1)))
                 {
                     appendFace(
                         vertices, cubeVertices, Front,
-                        worldX, y, worldZ);
+                        worldX, y, worldZ, getFaceTexture(block, Front));
                 }
 
                 if (isTransparent(
@@ -515,7 +579,7 @@ void buildChunkMesh(const World &world, const Chunk &chunk, std::vector<Vertex> 
                 {
                     appendFace(
                         vertices, cubeVertices, Back,
-                        worldX, y, worldZ);
+                        worldX, y, worldZ, getFaceTexture(block, Back));
                 }
 
                 if (isTransparent(
@@ -523,7 +587,7 @@ void buildChunkMesh(const World &world, const Chunk &chunk, std::vector<Vertex> 
                 {
                     appendFace(
                         vertices, cubeVertices, Left,
-                        worldX, y, worldZ);
+                        worldX, y, worldZ, getFaceTexture(block, Left));
                 }
 
                 if (isTransparent(
@@ -531,7 +595,7 @@ void buildChunkMesh(const World &world, const Chunk &chunk, std::vector<Vertex> 
                 {
                     appendFace(
                         vertices, cubeVertices, Right,
-                        worldX, y, worldZ);
+                        worldX, y, worldZ, getFaceTexture(block, Right));
                 }
 
                 if (isTransparent(
@@ -539,7 +603,7 @@ void buildChunkMesh(const World &world, const Chunk &chunk, std::vector<Vertex> 
                 {
                     appendFace(
                         vertices, cubeVertices, Bottom,
-                        worldX, y, worldZ);
+                        worldX, y, worldZ, getFaceTexture(block, Bottom));
                 }
 
                 if (isTransparent(
@@ -547,7 +611,8 @@ void buildChunkMesh(const World &world, const Chunk &chunk, std::vector<Vertex> 
                 {
                     appendFace(
                         vertices, cubeVertices, Top,
-                        worldX, y, worldZ);
+                        worldX, y, worldZ, getFaceTexture(block, Top));
+                }
                 }
             }
         }
@@ -578,13 +643,36 @@ void uploadMesh(Chunk &chunk, const std::vector<Vertex> &vertices)
     glBindVertexArray(0);
 }
 
+TextureRegion getFaceTexture(Block block, Face face)
+{
+    switch (block)
+    {
+        case GRASS:
+            switch (face)
+            {
+                case Top: return renderRegion(30, 3);
+                case Bottom: return renderRegion(30, 1);
+                default: return renderRegion(30, 2);
+            }
+        case DIRT:
+            return renderRegion(30, 2);
+        case STONE:
+            return renderRegion(32, 22);
+        case SAND:
+            return renderRegion(34, 2);
+        default:
+            return renderRegion(0, 0);
+    }
+}
+
 void appendFace(
         std::vector<Vertex> &meshVertices,
         const float cubeVertices[],
         int faceIndex,
         float blockX,
         float blockY,
-        float blockZ
+        float blockZ,
+        const TextureRegion &region
 ){
     constexpr int floatsPerVertex = 5;
     constexpr int verticesPerFace = 6;
@@ -594,12 +682,16 @@ void appendFace(
     for (int i = 0; i < verticesPerFace; ++i)
     {
         int offset = faceOffset + i * floatsPerVertex;
+
+        float localU = cubeVertices[offset + 3];
+        float localV = cubeVertices[offset + 4];
+
         Vertex vertex{
             cubeVertices[offset + 0] + blockX,
             cubeVertices[offset + 1] + blockY,
             cubeVertices[offset + 2] + blockZ,
-            cubeVertices[offset + 3] + blockX,
-            cubeVertices[offset + 4] + blockX,
+            region.u0 + localU * (region.u1 - region.u0),
+            region.v0 + localV * (region.v1 - region.v0),
         };
 
         meshVertices.push_back(vertex);

@@ -5,6 +5,7 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+add_subdirectory(dependencies/FastNoise2)
 # Tell the Ninja compiler where your manual folders live
 include_directories(include)
 link_directories(lib)
@@ -12,6 +13,7 @@ link_directories(lib)
 add_executable(${PROJECT_NAME} code/main.cpp)
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
+    FastNoise
     glfw3
     opengl32
     gdi32
