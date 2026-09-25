@@ -1,4 +1,4 @@
-#include "TerrainGenerator.h"
+#include "terrainGenerator.h"
 #include "noiseGeneration.h"
 
 float terrainHeight(int worldX, int worldZ)

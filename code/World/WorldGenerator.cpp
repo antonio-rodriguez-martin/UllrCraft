@@ -17,10 +17,10 @@ BlockType getWorldBlock(const World &world, int worldX, int worldY, int worldZ)
     ChunkKey key{chunkX, chunkZ};
     auto it = world.find(key);
 
-    if (it == world.end() || !it->second.generated)
+    if (it == world.end() || !it->second->generated)
         return AIR;
 
-    return getBlock(it->second, localX, worldY, localZ).blockType;
+    return getBlock(*it->second, localX, worldY, localZ).blockType;
 }
 
 Block& getBlock(Chunk& chunk, int x, int y, int z)

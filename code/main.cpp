@@ -2,12 +2,15 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdlib>
 #include <functional>
+#include <memory>
 #include <unordered_map>
 #include "FastNoise/Utility/SmartNode.h"
 #include "GLDebug.cpp"
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
+#include "Rendering/ChunkMesh.h"
 #include "World/WorldGenerator.h"
 #include "glm/ext/matrix_clip_space.hpp"
 #include "glm/ext/matrix_float4x4.hpp"
@@ -40,8 +43,8 @@ static int HEIGHT = 600;
 static float deltaTime;
 static float lastFrame;
 static glm::vec3 WorldUp = glm::vec3(0.0f, 1.0f, 0.0f);
-static int RENDER_DISTANCE = 2;
-
+static int LOAD_DISTANCE = 4;
+static int UNLOAD_DISTANCE = 8;
 
 struct Camera
 {
@@ -55,7 +58,7 @@ struct Camera
     float yaw_angle = -90.0f;
     float pitch_angle = 0.0f;
     float lastX = WIDTH/2.0f, lastY = HEIGHT/2.0f;
-    float zoom = 45.0f;
+    float zoom = 55.0f;
     bool firstMouse = true;
 };
 
@@ -67,6 +70,144 @@ void processInput(GLFWwindow* window);
 void mouse_callback(GLFWwindow* window, double xpos, double ypos);
 
 void ensureChunksAround(const glm::vec3 &playerPos, World &world);
+void unloadDistantChunk(int playerChunkX, int playerChunkZ, World &world);
+
+struct Node{
+    ChunkKey key;
+    std::unique_ptr<Chunk> value;
+    Node *next;
+    Node *prev;
+
+    Node(ChunkKey k, std::unique_ptr<Chunk> c)
+        :key{k},
+        value(std::move(c)),
+        next{nullptr},
+        prev{nullptr}
+    {
+    }
+};
+
+class LRUCache
+{
+    public:
+        int capacity;
+        std::unordered_map<ChunkKey, Node*, ChunkKeyHash> cacheMap;
+        Node *head;
+        Node *tail;
+        LRUCache(int capacity)
+            :capacity{capacity},
+            head{nullptr},
+            tail{nullptr}
+        {
+            ChunkKey dummyKey{0, 0};
+            head = new Node(dummyKey, nullptr);
+            tail = new Node( dummyKey,nullptr);
+            head->next = tail;
+            tail->prev = head;
+        }
+
+        ~LRUCache()
+        {
+            Node* node = head;
+            while (node != nullptr)
+            {
+                Node* next = node->next;
+                delete node;
+                node = next;
+            }
+            cacheMap.clear();
+        }
+
+        Chunk* get(const ChunkKey& key)
+        {
+            auto it = cacheMap.find(key);
+            if (it == cacheMap.end())
+                return nullptr;
+
+            Node *node = it->second;
+            remove(node);
+            add(node);
+            return node->value.get();
+        }
+
+        // Tranfers the ownership of the chunk from the URL to the world map
+        std::unique_ptr<Chunk> take(const ChunkKey& key)
+        {
+            auto it = cacheMap.find(key);
+            if (it == cacheMap.end())
+               return nullptr;
+
+            Node *node = it->second;
+            remove(node);
+            cacheMap.erase(it);
+            std::unique_ptr<Chunk> chunk = std::move(node->value);
+            delete node;
+            return chunk;
+        }
+
+        void put(const ChunkKey& key, std::unique_ptr<Chunk> value)
+        {
+            auto it = cacheMap.find(key);
+            if (it != cacheMap.end())
+            {
+                Node *oldNode = it->second;
+                remove(oldNode);
+                delete oldNode;
+                cacheMap.erase(it);
+            }
+
+            Node *node = new Node(key, std::move(value));
+            cacheMap[key] = node;
+            add(node);
+
+            if (cacheMap.size() > static_cast<std::size_t>(capacity))
+            {
+                Node *nodeToDelete = tail->prev;
+
+                if(nodeToDelete != head)
+                {
+                    remove(nodeToDelete);
+                    cacheMap.erase(nodeToDelete->key);
+                    delete nodeToDelete;
+                }
+            }
+        }
+
+        void add(Node *node)
+        {
+            Node *nextNode = head->next;
+            head->next = node;
+            node->prev = head;
+            node->next = nextNode;
+            nextNode->prev = node;
+        }
+
+        void remove(Node *node)
+        {
+            Node *prevNode = node->prev;
+            Node *nextNode = node->next;
+            prevNode->next = nextNode;
+            nextNode->prev = prevNode;
+        }
+
+        bool contains(const ChunkKey& key)
+        {
+            return cacheMap.find(key) != cacheMap.end();
+        }
+
+        void erase(const ChunkKey& key)
+        {
+            auto it = cacheMap.find(key);
+            if (it == cacheMap.end())
+                return;
+
+            Node* node = it->second;
+            remove(node);
+            cacheMap.erase(it);
+            delete node;
+        }
+};
+static LRUCache cache(25);
 
 int main()
 {
@@ -110,6 +251,7 @@ int main()
 
     lastFrame = static_cast<float>(glfwGetTime());
 
+
     while (!glfwWindowShouldClose(window))
     {
         //Deltatime calculation
@@ -128,11 +270,11 @@ int main()
         std::vector<Vertex> vertices;
         for (auto& [key, chunk] : worldChunks)
         {
-            if(!chunk.needsMeshRebuild) continue;
+            if(!chunk->needsMeshRebuild) continue;
             vertices.clear();
-            buildChunkMesh(worldChunks, chunk, vertices);
-            uploadMesh(chunk, vertices);
-            chunk.needsMeshRebuild = false;
+            buildChunkMesh(worldChunks, *chunk, vertices);
+            uploadMesh(*chunk, vertices);
+            chunk->needsMeshRebuild = false;
         }
 
         shader.use();
@@ -151,6 +293,8 @@ int main()
         shader.setMat4("view", view);
 
         renderWorld(worldChunks);
+
+        std::cout << worldChunks.size()  << "\n";
 
         glfwSwapBuffers(window);
         glfwPollEvents();
@@ -253,26 +397,57 @@ void mouse_callback(GLFWwindow* window, double xpos, double ypos)
     camera.MovementFront = glm::normalize(glm::vec3(direction.x, 0.0f, direction.z));
 }
 
+//TODO(ullr): Configure the take and the URL cache to use ownnership from world to Cache and from cache to World if coming back
 void ensureChunksAround(const glm::vec3 &playerPos, World &world)
 {
     int pcX = static_cast<int>(std::floor(playerPos.x / CHUNK_X));
     int pcZ = static_cast<int>(std::floor(playerPos.z / CHUNK_Z));
 
-    for (int dz = -RENDER_DISTANCE; dz <= RENDER_DISTANCE; ++dz)
+    for (int dz = -LOAD_DISTANCE; dz <= LOAD_DISTANCE; ++dz)
     {
-        for (int dx = -RENDER_DISTANCE; dx <= RENDER_DISTANCE; ++dx)
+        for (int dx = -LOAD_DISTANCE; dx <= LOAD_DISTANCE; ++dx)
         {
             ChunkKey key{pcX + dx, pcZ + dz};
             auto it = world.find(key);
             if (it == world.end())
             {
-                Chunk& chunk = world[key];
-                chunk.chunkX = key.x;
-                chunk.chunkZ = key.z;
-                generateChunk(chunk);
-                chunk.needsMeshRebuild = true;
+                auto chunk = cache.take(key);
+                if (!chunk)
+                {
+                    chunk = std::make_unique<Chunk>();
+                    chunk->chunkX = key.x;
+                    chunk->chunkZ = key.z;
+                    generateChunk(*chunk);
+                }
+                world.emplace(key, std::move(chunk));
+                markNeighborsDirty(world, key);
             }
         }
     }
+    unloadDistantChunk(pcX, pcZ, world);
 }
 
+void unloadDistantChunk(int playerChunkX, int playerChunkZ, World &world)
+{
+    for (auto it = world.begin(); it != world.end();)
+    {
+        const int dx = it->first.x - playerChunkX;
+        const int dz = it->first.z - playerChunkZ;
+
+        const int distanceSquared = dx * dx + dz * dz;
+
+
+        if (distanceSquared > UNLOAD_DISTANCE * UNLOAD_DISTANCE)
+        {
+            ChunkKey key = it->first;
+
+            std::unique_ptr<Chunk> chunk = std::move(it->second);
+
+            it = world.erase(it);
+
+            cache.put(key, std::move(chunk));
+        }
+        else
+         ++it;
+    }
+}

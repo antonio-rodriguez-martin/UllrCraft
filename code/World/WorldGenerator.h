@@ -1,10 +1,11 @@
 #pragma once
 #include <algorithm>
+#include <memory>
 #include <unordered_map>
 #include "Chunk.h"
 #include "ChunKey.h"
 
-using World = std::unordered_map<ChunkKey, Chunk, ChunkKeyHash>;
+using World = std::unordered_map<ChunkKey, std::unique_ptr<Chunk>, ChunkKeyHash>;
 
 Block& getBlock(Chunk& chunk, int x, int y, int z);
 const Block& getBlock(const Chunk& chunk, int x, int y, int z);

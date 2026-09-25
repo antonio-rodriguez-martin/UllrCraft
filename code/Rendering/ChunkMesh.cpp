@@ -190,3 +190,16 @@ void uploadMesh(Chunk &chunk, const std::vector<Vertex> &vertices)
     glBindVertexArray(0);
 }
 
+void markNeighborsDirty(World &world, const ChunkKey& key)
+{
+    const ChunkKey neighbors[4] = {
+        {key.x - 1, key.z}, {key.x + 1, key.z},
+        {key.x, key.z - 1}, {key.x, key.z + 1},
+    };
+    for (const auto& n : neighbors)
+    {
+        auto it = world.find(n);
+        if (it != world.end())
+            it->second->needsMeshRebuild = true;
+    }
+}

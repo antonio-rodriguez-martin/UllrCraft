@@ -1,4 +1,5 @@
 #pragma once
+#include <memory>
 #include <unordered_map>
 #include "textureMap.h"
 #include "../World/ChunKey.h"
@@ -28,7 +29,7 @@ enum Face {
 };
 
 using ChunkMeshes = std::unordered_map<ChunkKey, ChunkMesh, ChunkKeyHash>;
-using World = std::unordered_map<ChunkKey, Chunk, ChunkKeyHash>;
+using World = std::unordered_map<ChunkKey, std::unique_ptr<Chunk>, ChunkKeyHash>;
 
 
 void buildChunkMesh(const World &world, const Chunk &chunk, std::vector<Vertex> &vertices);
@@ -36,6 +37,7 @@ void appendFace( std::vector<Vertex> &meshVertices, const float cubeVertices[], 
 TextureRegion getFaceTexture(BlockType blockType, Face face);
 bool isTransparent(BlockType blockType);
 void uploadMesh(Chunk &chunk, const std::vector<Vertex> &vertices);
+void markNeighborsDirty(World &world, const ChunkKey& key);
 
 inline constexpr float cubeVertices[] = {
 // Front face (-Z)
