@@ -179,11 +179,11 @@ void uploadMesh(Chunk &chunk, const std::vector<Vertex> &vertices)
 
     glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(Vertex), vertices.data(), GL_STATIC_DRAW);
 
-    glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)(offsetof(Vertex, x)));
+    glEnableVertexAttribArray(0);
 
-    glEnableVertexAttribArray(1);
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)(offsetof(Vertex, u)));
+    glEnableVertexAttribArray(1);
 
     chunk.vertexCount = static_cast<int>(vertices.size());
 

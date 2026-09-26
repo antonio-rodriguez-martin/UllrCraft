@@ -15,9 +15,9 @@ struct Chunk
     //Block blocks [CHUNK_SIZE][CHUNK_HEIGHT][CHUNK_SIZE];
     std::array<Block, BLOCK_COUNT> blocks;
 
-    GLuint VAO;
-    GLuint VBO;
-    GLuint vertexCount;
+    GLuint VAO = 0;
+    GLuint VBO = 0;
+    GLuint vertexCount = 0;
 
     //rendering flags
     bool needsMeshRebuild = false;

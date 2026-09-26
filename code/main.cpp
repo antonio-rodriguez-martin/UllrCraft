@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <functional>
 #include <memory>
+#include <thread>
 #include <unordered_map>
 #include "FastNoise/Utility/SmartNode.h"
 #include "GLDebug.cpp"
@@ -35,8 +36,13 @@
 #include "Rendering/textureMap.cpp"
 #include "Rendering/stb_image.cpp"
 
+#include "threading.cpp"
+#include "threading.h"
+
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
+#include <unordered_set>
+#include <vector>
 
 static int WIDTH = 800;
 static int HEIGHT = 600;
@@ -45,6 +51,10 @@ static float lastFrame;
 static glm::vec3 WorldUp = glm::vec3(0.0f, 1.0f, 0.0f);
 static int LOAD_DISTANCE = 4;
 static int UNLOAD_DISTANCE = 8;
+std::unordered_set<ChunkKey, ChunkKeyHash> chunksGenerating;
+
+std::vector<Task> tasksVect;
+World worldChunks;
 
 struct Camera
 {
@@ -237,7 +247,6 @@ int main()
 
     NoiseGenerator::initNoise();
 
-    World worldChunks;
 
 
     Shader shader(SHADER_DIR"shader.vs", SHADER_DIR"shader.fs");
@@ -251,6 +260,7 @@ int main()
 
     lastFrame = static_cast<float>(glfwGetTime());
 
+    startServer(8);
 
     while (!glfwWindowShouldClose(window))
     {
@@ -265,14 +275,28 @@ int main()
         glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
+        auto generatedChunks = getChunks(8);
+        for (Chunk* c : generatedChunks)
+        {
+            ChunkKey key(c->chunkX, c->chunkZ);
+            chunksGenerating.erase(key);
+            worldChunks.emplace(key, std::unique_ptr<Chunk>(c));
+            markNeighborsDirty(worldChunks, key);
+             std::cout << "[main] recibido chunk " << key.x << "," << key.z
+              << " worldSize=" << worldChunks.size() << "\n";
+        }
+
         ensureChunksAround(camera.cameraPos, worldChunks);
 
+        //Build mesh
         std::vector<Vertex> vertices;
         for (auto& [key, chunk] : worldChunks)
         {
             if(!chunk->needsMeshRebuild) continue;
             vertices.clear();
             buildChunkMesh(worldChunks, *chunk, vertices);
+            std::cout << "[mesh] chunk " << key.x << "," << key.z
+              << " vértices=" << vertices.size() << "\n";
             uploadMesh(*chunk, vertices);
             chunk->needsMeshRebuild = false;
         }
@@ -293,6 +317,11 @@ int main()
         shader.setMat4("view", view);
 
         renderWorld(worldChunks);
+        for (auto& [key, chunk] : worldChunks)
+    std::cout << "chunk " << key.x << "," << key.z
+              << " VAO=" << chunk->VAO
+              << " VBO=" << chunk->VBO
+              << " verts=" << chunk->vertexCount << std::endl;
 
         std::cout << worldChunks.size()  << "\n";
 
@@ -301,6 +330,7 @@ int main()
     }
 
     glfwTerminate();
+    stopServer();
 
     return 0;
 }
@@ -403,24 +433,36 @@ void ensureChunksAround(const glm::vec3 &playerPos, World &world)
     int pcX = static_cast<int>(std::floor(playerPos.x / CHUNK_X));
     int pcZ = static_cast<int>(std::floor(playerPos.z / CHUNK_Z));
 
+    setPlayerChunk(pcX, pcZ);
     for (int dz = -LOAD_DISTANCE; dz <= LOAD_DISTANCE; ++dz)
     {
         for (int dx = -LOAD_DISTANCE; dx <= LOAD_DISTANCE; ++dx)
         {
             ChunkKey key{pcX + dx, pcZ + dz};
+
+            if (world.find(key) != world.end())
+                continue;
+            if (chunksGenerating.contains(key))
+                continue;
+
+
             auto it = world.find(key);
             if (it == world.end())
             {
                 auto chunk = cache.take(key);
-                if (!chunk)
+                if (chunk)
                 {
-                    chunk = std::make_unique<Chunk>();
-                    chunk->chunkX = key.x;
-                    chunk->chunkZ = key.z;
-                    generateChunk(*chunk);
+                    chunksGenerating.erase(key);
+                    world.emplace(key, std::move(chunk));
+                    markNeighborsDirty(world, key);
+                    continue;
                 }
-                world.emplace(key, std::move(chunk));
-                markNeighborsDirty(world, key);
+                Task task;
+                task.type = Task::generateChunk;
+                task.pos = glm::ivec3(key.x, 0, key.z);
+                task.priority = dx * dx + dz * dz;
+                submitTask(task);
+                chunksGenerating.insert(key);
             }
         }
     }
