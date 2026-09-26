@@ -36,4 +36,8 @@ void setPlayerChunk(int cx, int cz);
 void startServer(int numThreads = 0);
 void stopServer();
 
+void markGenerating(const ChunkKey& key);
+void unmarkGenerating(const ChunkKey& key);
+bool isGenerating(const ChunkKey& key);
+
 extern std::atomic<bool> serverRunning;

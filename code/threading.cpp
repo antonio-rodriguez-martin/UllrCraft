@@ -1,9 +1,12 @@
 #include "threading.h"
+#include <atomic>
 #include <iostream>
 #include <thread>
 #include <mutex>
 #include <queue>
+#include <unordered_set>
 #include <vector>
+#include "World/ChunKey.h"
 #include "World/Chunk.h"
 #include "World/WorldGenerator.h"
 
@@ -21,14 +24,25 @@ std::vector<std::thread> workers;
 std::atomic<bool> stopFlag(false);
 std::atomic<bool> serverRunning(true);
 
+std::atomic<int> glPlayerCX(0);
+std::atomic<int> glPlayerCZ(0);
+
+static std::mutex generatingMutex;
+std::unordered_set<ChunkKey, ChunkKeyHash> chunksGenerating;
+
+int MAX_RELEVANT = 1;
+
+void setPlayerChunk(int cx, int cz)
+{
+    glPlayerCX.store(cx, std::memory_order_relaxed);
+    glPlayerCZ.store(cz, std::memory_order_relaxed);
+}
+
 void submitTask(Task& t)
 {
     {
         std::lock_guard<std::mutex> lock(taskMutex);
         tasks.push(t);
-        std::cout << "[submit] task (" << t.pos.x << "," << t.pos.z
-                  << ") prio=" << t.priority
-                  << " queue=" << tasks.size() << "\n";
     }
     taskCondition.notify_all();
 }
@@ -54,8 +68,6 @@ std::vector<Chunk*> getChunks(int maxCount)
 {
     std::vector<Chunk*> retVector;
     std::lock_guard<std::mutex> lock(chunkMutex);
-    std::cout << "[getChunks] disponibles=" << chunks.size()
-              << " maxCount=" << maxCount << "\n";
 
     auto total = chunks.size();
     const std::size_t limit =
@@ -83,25 +95,27 @@ static void workerFunction()
                 return;
 
             if (tasks.empty())
-                return;
+                continue;
 
             task = tasks.top();
             tasks.pop();
-            std::cout << "[worker] sacada tarea (" << task.pos.x << "," << task.pos.z
-                      << ") queue=" << tasks.size() << "\n";
+            int pcx = glPlayerCX.load();
+            int pcz = glPlayerCZ.load();
+            int ddx = task.pos.x - pcx;
+            int ddz = task.pos.z - pcz;
+            if (ddx*ddx + ddz*ddz > MAX_RELEVANT * MAX_RELEVANT)
+            {
+                unmarkGenerating(ChunkKey{task.pos.x, task.pos.z});
+                continue;
+            }
         }
         if (task.type == Task::generateChunk)
         {
-            std::cout << "[worker] generando chunk " <<task.pos.x << ", " << task.pos.z << "\n";
             Chunk* c = new Chunk;
             c->chunkX = task.pos.x;
             c->chunkZ = task.pos.z;
 
-            {
-                std::lock_guard<std::mutex> lock(genMutex);
-                generateChunk(*c);
-            }
-            std::cout << "[worker] chunk listo " << c->chunkX << "," << c->chunkZ << "\n";
+            generateChunk(*c);
             submitChunk(c);
         }
     }
@@ -138,4 +152,23 @@ void stopServer()
         if (w.joinable()) w.join();
 
     workers.clear();
+}
+
+//Chunk generating
+void markGenerating(const ChunkKey& key)
+{
+    std::lock_guard<std::mutex> lock(generatingMutex);
+    chunksGenerating.insert(key);
+}
+
+void unmarkGenerating(const ChunkKey& key)
+{
+    std::lock_guard<std::mutex> lock(generatingMutex);
+    chunksGenerating.erase(key);
+}
+
+bool isGenerating(const ChunkKey& key)
+{
+    std::lock_guard<std::mutex> lock(generatingMutex);
+    return chunksGenerating.contains(key);
 }

@@ -49,9 +49,8 @@ static int HEIGHT = 600;
 static float deltaTime;
 static float lastFrame;
 static glm::vec3 WorldUp = glm::vec3(0.0f, 1.0f, 0.0f);
-static int LOAD_DISTANCE = 4;
-static int UNLOAD_DISTANCE = 8;
-std::unordered_set<ChunkKey, ChunkKeyHash> chunksGenerating;
+static int LOAD_DISTANCE = 6;
+static int UNLOAD_DISTANCE = 10;
 
 std::vector<Task> tasksVect;
 World worldChunks;
@@ -262,6 +261,7 @@ int main()
 
     startServer(8);
 
+    MAX_RELEVANT = UNLOAD_DISTANCE;
     while (!glfwWindowShouldClose(window))
     {
         //Deltatime calculation
@@ -272,31 +272,30 @@ int main()
         //Input calculation
         processInput(window);
 
-        glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
+        glClearColor(0.47f, 0.65f, 1.0f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        auto generatedChunks = getChunks(8);
+        auto generatedChunks = getChunks(2);
         for (Chunk* c : generatedChunks)
         {
             ChunkKey key(c->chunkX, c->chunkZ);
-            chunksGenerating.erase(key);
+            unmarkGenerating(key);
             worldChunks.emplace(key, std::unique_ptr<Chunk>(c));
             markNeighborsDirty(worldChunks, key);
-             std::cout << "[main] recibido chunk " << key.x << "," << key.z
-              << " worldSize=" << worldChunks.size() << "\n";
         }
 
         ensureChunksAround(camera.cameraPos, worldChunks);
 
         //Build mesh
         std::vector<Vertex> vertices;
+        int meshBudget = 2;
         for (auto& [key, chunk] : worldChunks)
         {
+            if(meshBudget ==0) break;
             if(!chunk->needsMeshRebuild) continue;
+            --meshBudget;
             vertices.clear();
             buildChunkMesh(worldChunks, *chunk, vertices);
-            std::cout << "[mesh] chunk " << key.x << "," << key.z
-              << " vértices=" << vertices.size() << "\n";
             uploadMesh(*chunk, vertices);
             chunk->needsMeshRebuild = false;
         }
@@ -317,13 +316,6 @@ int main()
         shader.setMat4("view", view);
 
         renderWorld(worldChunks);
-        for (auto& [key, chunk] : worldChunks)
-    std::cout << "chunk " << key.x << "," << key.z
-              << " VAO=" << chunk->VAO
-              << " VBO=" << chunk->VBO
-              << " verts=" << chunk->vertexCount << std::endl;
-
-        std::cout << worldChunks.size()  << "\n";
 
         glfwSwapBuffers(window);
         glfwPollEvents();
@@ -442,9 +434,8 @@ void ensureChunksAround(const glm::vec3 &playerPos, World &world)
 
             if (world.find(key) != world.end())
                 continue;
-            if (chunksGenerating.contains(key))
+            if (isGenerating(key))
                 continue;
-
 
             auto it = world.find(key);
             if (it == world.end())
@@ -452,7 +443,7 @@ void ensureChunksAround(const glm::vec3 &playerPos, World &world)
                 auto chunk = cache.take(key);
                 if (chunk)
                 {
-                    chunksGenerating.erase(key);
+                    unmarkGenerating(key);
                     world.emplace(key, std::move(chunk));
                     markNeighborsDirty(world, key);
                     continue;
@@ -462,7 +453,7 @@ void ensureChunksAround(const glm::vec3 &playerPos, World &world)
                 task.pos = glm::ivec3(key.x, 0, key.z);
                 task.priority = dx * dx + dz * dz;
                 submitTask(task);
-                chunksGenerating.insert(key);
+                markGenerating(key);
             }
         }
     }
