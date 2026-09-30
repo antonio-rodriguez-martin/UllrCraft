@@ -12,12 +12,15 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include "Rendering/ChunkMesh.h"
+#include "World/Block.h"
 #include "World/WorldGenerator.h"
+#include "glm/common.hpp"
 #include "glm/ext/matrix_clip_space.hpp"
 #include "glm/ext/matrix_float4x4.hpp"
 #include "glm/ext/matrix_transform.hpp"
 #include "glm/ext/vector_float3.hpp"
 #include "glm/ext/vector_float4.hpp"
+#include "glm/ext/vector_int3.hpp"
 #include "glm/geometric.hpp"
 #include "glm/trigonometric.hpp"
 
@@ -51,9 +54,11 @@ static float lastFrame;
 static glm::vec3 WorldUp = glm::vec3(0.0f, 1.0f, 0.0f);
 static int LOAD_DISTANCE = 6;
 static int UNLOAD_DISTANCE = 10;
+constexpr float INTERACTION_MAX_REACH  = 5.0f;
 
 std::vector<Task> tasksVect;
 World worldChunks;
+
 
 struct Camera
 {
@@ -77,9 +82,15 @@ unsigned int loadTexture(char const* path);
 void framebuffer_size_callback(GLFWwindow *window, int width, int height);
 void processInput(GLFWwindow* window);
 void mouse_callback(GLFWwindow* window, double xpos, double ypos);
+void mouse_button_callback(GLFWwindow* window, int button, int action, int mods);
 
 void ensureChunksAround(const glm::vec3 &playerPos, World &world);
 void unloadDistantChunk(int playerChunkX, int playerChunkZ, World &world);
+RayHit raycastBlock(const glm::vec3& origin, const glm::vec3& dir, float maxDist);
+bool setBlockAt(World &world, glm::ivec3 worldPos, Block newBlock);
+bool destroyBlock(World& world, glm::ivec3 worldPos);
+void tryDestroyBlock(const glm::vec3& playerPos, World &world, RayHit hit);
+void tryPlaceBlock(const glm::vec3& playerPos, World &world, RayHit hit, Block newBlock);
 
 struct Node{
     ChunkKey key;
@@ -256,6 +267,8 @@ int main()
     glEnable(GL_DEPTH_TEST);
     glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
     glfwSetCursorPosCallback(window, mouse_callback);
+    glfwSetMouseButtonCallback(window, mouse_button_callback);
+    glfwSetInputMode(window, GLFW_UNLIMITED_MOUSE_BUTTONS, GLFW_TRUE);
 
     lastFrame = static_cast<float>(glfwGetTime());
 
@@ -382,6 +395,23 @@ void processInput(GLFWwindow* window)
         camera.cameraPos.y -= 1.0f * cameraSpeed;
 }
 
+void mouse_button_callback(GLFWwindow* window, int button, int action, int mods)
+{
+    if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS)
+    {
+        RayHit hit = raycastBlock(camera.cameraPos, camera.DirectionFront, INTERACTION_MAX_REACH);
+        tryDestroyBlock(camera.cameraPos, worldChunks, hit);
+    }
+    if (button == GLFW_MOUSE_BUTTON_RIGHT && action == GLFW_PRESS)
+    {
+        RayHit hit = raycastBlock(camera.cameraPos, camera.DirectionFront, INTERACTION_MAX_REACH);
+        Block block{};
+        block.blockType = GRASS;
+        tryPlaceBlock(camera.cameraPos, worldChunks, hit, block);
+    }
+
+}
+
 void mouse_callback(GLFWwindow* window, double xpos, double ypos)
 {
     if (camera.firstMouse)
@@ -483,4 +513,160 @@ void unloadDistantChunk(int playerChunkX, int playerChunkZ, World &world)
         else
          ++it;
     }
+}
+
+RayHit raycastBlock(const glm::vec3& origin, const glm::vec3& dir, float maxDist)
+{
+    RayHit result;
+
+    glm::ivec3 voxel = glm::floor(origin);
+    glm::ivec3 step(
+        dir.x > 0 ? 1 : -1,
+        dir.y > 0 ? 1 : -1,
+        dir.z > 0 ? 1 : -1
+    );
+
+    glm::vec3 tMax, tDelta;
+    for (int i = 0; i < 3; ++i)
+    {
+        if (dir[i] == 0.0f)
+        {
+            tMax[i] = 1e30f;
+            tDelta[i] = 1e30f;
+        }
+        else
+        {
+            //if we move positively then left, if we move negatively then right
+            float nextBoundary = (step[i] > 0) ? (voxel[i] + 1) : voxel[i];
+            // origin + dir * t = boundary -> we rearrange to get the t (tMax)
+            tMax[i] = (nextBoundary - origin[i]) / dir[i];
+            tDelta[i] = 1.0f / std::abs(dir[i]); //distance in ray parameter t between voxel boundaries
+        }
+    }
+
+    float t = 0.0f;
+    glm::ivec3 normal(0);
+
+    while (t <= maxDist)
+    {
+        if (isBlockSolid(worldChunks, voxel.x, voxel.y, voxel.z))
+        {
+            result.hit = true;
+            result.blockPos = voxel;
+            result.normal = normal;
+    std::cout << "Result hit|position|normal: " << result.hit  << "|" << result.blockPos.x << "," << result.blockPos.y << "," << result.blockPos.z << "|" << result.normal.x << "," << result.normal.y << "," << result.normal.z<< "\n";
+            return result;
+        }
+
+        if (tMax.x < tMax.y && tMax.x < tMax.z)
+        {
+            voxel.x += step.x; t = tMax.x; tMax.x += tDelta.x;
+            normal = glm::ivec3(-step.x, 0, 0);
+        }
+        else if (tMax.y < tMax.z)
+        {
+            voxel.y += step.y; t = tMax.y; tMax.y += tDelta.y;
+            normal = glm::ivec3(0, -step.y, 0);
+        }
+        else
+        {
+            voxel.z += step.z; t = tMax.z; tMax.z += tDelta.z;
+            normal = glm::ivec3(0, 0, -step.z);
+        }
+    }
+    std::cout << "Result hit|position|normal: " << result.hit  << "|" << result.blockPos.x << "," << result.blockPos.y << "," << result.blockPos.z << "|" << result.normal.x << "," << result.normal.y << "," << result.normal.z<< "\n";
+    return result; //hit = false
+}
+
+void markBlockChanged(World& world, int worldX, int worldY, int worldZ)
+{
+    int chunkX = static_cast<int>(std::floor(static_cast<float>(worldX) / CHUNK_X));
+    int chunkZ = static_cast<int>(std::floor(static_cast<float>(worldZ) / CHUNK_Z));
+
+    auto markDirty = [&](int x, int z){
+        auto it = world.find(ChunkKey{x, z});
+        if (it != world.end())
+            it->second->needsMeshRebuild = true;
+    };
+
+    markDirty(chunkX, chunkZ);
+
+    if ((worldX & 15) == 0) markDirty(chunkX - 1, chunkZ);
+    if ((worldX & 15) == 15) markDirty(chunkX + 1, chunkZ);
+    if ((worldZ & 15) == 0) markDirty(chunkX, chunkZ - 1);
+    if ((worldZ & 15) == 15) markDirty(chunkX, chunkZ + 1);
+
+    if ((worldX & 15) == 0 && (worldZ & 15) == 0) markDirty(chunkX - 1, chunkZ - 1);
+    if ((worldX & 15) == 15 && (worldZ & 15) == 0) markDirty(chunkX + 1, chunkZ - 1);
+    if ((worldX & 15) == 0 && (worldZ & 15) == 15) markDirty(chunkX - 1, chunkZ + 1);
+    if ((worldX & 15) == 15 && (worldZ & 15) == 15) markDirty(chunkX + 1, chunkZ + 1);
+}
+
+//TODO(ullr): I have the selection function, Create the destruct and set blocks functions
+void tryPlaceBlock(const glm::vec3& playerPos, World &world, RayHit hit, Block newBlock)
+{
+    if (!hit.hit ) return;
+
+    glm::ivec3 target = hit.blockPos + hit.normal;
+
+    //TODO(ullr): change this for the AABB intersection collision
+    glm::ivec3 playerVoxel = glm::floor(playerPos);
+    if (target == playerVoxel) return;
+    if (target == playerVoxel + glm::ivec3(0, 1, 0)) return;
+
+    setBlockAt(world, target, newBlock);
+    markBlockChanged(world, target.x, target.y, target.z);
+}
+
+void tryDestroyBlock(const glm::vec3& playerPos, World &world, RayHit hit)
+{
+    if (!hit.hit ) return;
+
+    glm::ivec3 target = hit.blockPos;
+
+    //TODO(ullr): change this for the AABB intersection collision
+    glm::ivec3 playerVoxel = glm::floor(playerPos);
+    if (target == playerVoxel) return;
+    if (target == playerVoxel + glm::ivec3(0, 1, 0)) return;
+
+    destroyBlock(world, target);
+    markBlockChanged(world, target.x, target.y, target.z);
+}
+
+bool setBlockAt(World &world, glm::ivec3 worldPos, Block newBlock)
+{
+    int chunkX = static_cast<int>(std::floor(static_cast<float>(worldPos.x) / CHUNK_X));
+    int chunkZ = static_cast<int>(std::floor(static_cast<float>(worldPos.z) / CHUNK_Z));
+
+    auto it = world.find(ChunkKey{chunkX, chunkZ});
+
+    if (it == world.end()) return false; //not loaded chunk
+
+    int lx = worldPos.x & 15;
+    int lz = worldPos.z & 15;
+    int ly = worldPos.y;
+    if (ly < 0 || ly >= CHUNK_Y) return false;
+
+    it->second->blocks[blockIndex(lx, ly, lz)].blockType = newBlock.blockType;
+    return true;
+}
+
+bool destroyBlock(World& world, glm::ivec3 worldPos)
+{
+
+    int chunkX = static_cast<int>(std::floor(static_cast<float>(worldPos.x) / CHUNK_X));
+    int chunkZ = static_cast<int>(std::floor(static_cast<float>(worldPos.z) / CHUNK_Z));
+
+    auto it = world.find(ChunkKey{chunkX, chunkZ});
+
+    if (it == world.end()) return false; //not loaded chunk
+
+    int lx = worldPos.x & 15;
+    int lz = worldPos.z & 15;
+    int ly = worldPos.y;
+    if (ly < 0 || ly >= CHUNK_Y) return false;
+
+    it->second->blocks[blockIndex(lx, ly, lz)].blockType = AIR;
+    return true;
+
 }

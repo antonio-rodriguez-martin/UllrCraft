@@ -23,16 +23,19 @@ BlockType getWorldBlock(const World &world, int worldX, int worldY, int worldZ)
     return getBlock(*it->second, localX, worldY, localZ).blockType;
 }
 
+//Returns the coordinate of a block in a given Chunk
 Block& getBlock(Chunk& chunk, int x, int y, int z)
 {
     return chunk.blocks[blockIndex(x, y, z)];
 }
 
+//Returns the coordinate of a block in a given Chunk
 const Block& getBlock(const Chunk& chunk, int x, int y, int z)
 {
     return chunk.blocks[blockIndex(x, y, z)];
 }
 
+//Returns the raw coordinate
 constexpr int blockIndex(int x, int y, int z)
 {
     return x + CHUNK_X * (z + CHUNK_Z * y);
@@ -73,4 +76,10 @@ void generateChunk(Chunk &chunk)
     }
     chunk.generated = true;
     chunk.needsMeshRebuild = true;
+}
+
+
+bool isBlockSolid(const World &world, int worldX, int worldY, int worldZ)
+{
+    return getWorldBlock(world, worldX,  worldY, worldZ) != AIR;
 }

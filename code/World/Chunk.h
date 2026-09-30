@@ -1,6 +1,7 @@
 #pragma once
 #include <array>
 #include <GLFW/glfw3.h>
+#include "glm/ext/vector_int3.hpp"
 #include "Block.h"
 
 const int CHUNK_X = 16;
@@ -24,4 +25,10 @@ struct Chunk
     bool generated = false; //for ram generation False -> in disk true -> ram
 };
 
-
+//RayCast basic Structure
+struct RayHit
+{
+    glm::ivec3 blockPos;
+    glm::ivec3 normal;
+    bool hit = false;
+};
