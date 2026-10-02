@@ -2,7 +2,7 @@
 #include <array>
 #include <GLFW/glfw3.h>
 #include "glm/ext/vector_int3.hpp"
-#include "Block.h"
+#include "../Items/Block.h"
 
 const int CHUNK_X = 16;
 const int CHUNK_Y = 256;

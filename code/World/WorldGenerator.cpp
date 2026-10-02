@@ -1,6 +1,7 @@
 #include "WorldGenerator.h"
 #include "../Generation/noiseGeneration.h"
 #include "../Generation/terrainGenerator.h"
+#include "../Items/Block.h"
 
 BlockType getWorldBlock(const World &world, int worldX, int worldY, int worldZ)
 {
@@ -60,6 +61,9 @@ void generateChunk(Chunk &chunk)
                 if (y < height - 4) {block.blockType = STONE;}
                 else if (y < height - 1) {block.blockType = DIRT;}
                 else if (y == height - 1) {block.blockType = GRASS;}
+                block.hardness = setBlockHardness(block.blockType);
+                block.minimumTier = setMinimumTier(block.blockType);
+                block.preferredToolType = setPreferedTool(block.blockType);
 
                 //carving caves only into solid blocks below surface
                 if (block.blockType != AIR &&

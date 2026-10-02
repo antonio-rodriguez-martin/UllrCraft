@@ -11,9 +11,6 @@
 #include "GLDebug.cpp"
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
-#include "Rendering/ChunkMesh.h"
-#include "World/Block.h"
-#include "World/WorldGenerator.h"
 #include "glm/common.hpp"
 #include "glm/ext/matrix_clip_space.hpp"
 #include "glm/ext/matrix_float4x4.hpp"
@@ -27,8 +24,13 @@
 #include "Rendering/ShaderReader.h"
 #include "Rendering/stb_image.h"
 
+#include "World/WorldGenerator.h"
 #include "World/Chunk.h"
 #include "World/ChunKey.h"
+#include "Items/Block.h"
+#include "Rendering/ChunkMesh.h"
+#include "Items/items.h"
+#include "Items/tools.h"
 
 // Implementation files - unity build
 #include "World/WorldGenerator.cpp"
@@ -38,6 +40,8 @@
 #include "Rendering/WorldRenderer.cpp"
 #include "Rendering/textureMap.cpp"
 #include "Rendering/stb_image.cpp"
+#include "Items/tools.cpp"
+#include "Items/items.cpp"
 
 #include "threading.cpp"
 #include "threading.h"
@@ -56,9 +60,12 @@ static int LOAD_DISTANCE = 6;
 static int UNLOAD_DISTANCE = 10;
 constexpr float INTERACTION_MAX_REACH  = 5.0f;
 
+glm::ivec3 lastHitBlock = glm::vec3(0);
+bool leftMouseHeld = false;
+float breakProgress = 0.0f;
+
 std::vector<Task> tasksVect;
 World worldChunks;
-
 
 struct Camera
 {
@@ -86,11 +93,12 @@ void mouse_button_callback(GLFWwindow* window, int button, int action, int mods)
 
 void ensureChunksAround(const glm::vec3 &playerPos, World &world);
 void unloadDistantChunk(int playerChunkX, int playerChunkZ, World &world);
-RayHit raycastBlock(const glm::vec3& origin, const glm::vec3& dir, float maxDist);
+RayHit raycastBlock(const glm::vec3& origin, const glm::vec3& dir, float maxDist, World& world);
 bool setBlockAt(World &world, glm::ivec3 worldPos, Block newBlock);
 bool destroyBlock(World& world, glm::ivec3 worldPos);
 void tryDestroyBlock(const glm::vec3& playerPos, World &world, RayHit hit);
 void tryPlaceBlock(const glm::vec3& playerPos, World &world, RayHit hit, Block newBlock);
+void checkBreakeableBlock(World& world);
 
 struct Node{
     ChunkKey key;
@@ -258,7 +266,6 @@ int main()
     NoiseGenerator::initNoise();
 
 
-
     Shader shader(SHADER_DIR"shader.vs", SHADER_DIR"shader.fs");
 
     GLuint texture = loadTexture(TEXTURE_DIR"textureAtlas.png");
@@ -284,6 +291,7 @@ int main()
 
         //Input calculation
         processInput(window);
+        checkBreakeableBlock(worldChunks);
 
         glClearColor(0.47f, 0.65f, 1.0f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -397,14 +405,19 @@ void processInput(GLFWwindow* window)
 
 void mouse_button_callback(GLFWwindow* window, int button, int action, int mods)
 {
-    if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS)
+    if (button == GLFW_MOUSE_BUTTON_LEFT)
     {
-        RayHit hit = raycastBlock(camera.cameraPos, camera.DirectionFront, INTERACTION_MAX_REACH);
-        tryDestroyBlock(camera.cameraPos, worldChunks, hit);
+        if (action == GLFW_PRESS)
+            leftMouseHeld = true;
+        else if (action == GLFW_RELEASE)
+        {
+            leftMouseHeld = false;
+            breakProgress = 0.0f;
+        }
     }
     if (button == GLFW_MOUSE_BUTTON_RIGHT && action == GLFW_PRESS)
     {
-        RayHit hit = raycastBlock(camera.cameraPos, camera.DirectionFront, INTERACTION_MAX_REACH);
+        RayHit hit = raycastBlock(camera.cameraPos, camera.DirectionFront, INTERACTION_MAX_REACH, worldChunks);
         Block block{};
         block.blockType = GRASS;
         tryPlaceBlock(camera.cameraPos, worldChunks, hit, block);
@@ -515,7 +528,7 @@ void unloadDistantChunk(int playerChunkX, int playerChunkZ, World &world)
     }
 }
 
-RayHit raycastBlock(const glm::vec3& origin, const glm::vec3& dir, float maxDist)
+RayHit raycastBlock(const glm::vec3& origin, const glm::vec3& dir, float maxDist, World& world)
 {
     RayHit result;
 
@@ -549,7 +562,7 @@ RayHit raycastBlock(const glm::vec3& origin, const glm::vec3& dir, float maxDist
 
     while (t <= maxDist)
     {
-        if (isBlockSolid(worldChunks, voxel.x, voxel.y, voxel.z))
+        if (isBlockSolid(world, voxel.x, voxel.y, voxel.z))
         {
             result.hit = true;
             result.blockPos = voxel;
@@ -653,7 +666,6 @@ bool setBlockAt(World &world, glm::ivec3 worldPos, Block newBlock)
 
 bool destroyBlock(World& world, glm::ivec3 worldPos)
 {
-
     int chunkX = static_cast<int>(std::floor(static_cast<float>(worldPos.x) / CHUNK_X));
     int chunkZ = static_cast<int>(std::floor(static_cast<float>(worldPos.z) / CHUNK_Z));
 
@@ -668,5 +680,37 @@ bool destroyBlock(World& world, glm::ivec3 worldPos)
 
     it->second->blocks[blockIndex(lx, ly, lz)].blockType = AIR;
     return true;
+}
 
+//It does the computation for breaking a block while holding left button mouse
+void checkBreakeableBlock(World& world)
+{
+    if (leftMouseHeld)
+    {
+        RayHit hit = raycastBlock(camera.cameraPos, camera.DirectionFront, INTERACTION_MAX_REACH, worldChunks);
+        if (hit.blockPos != lastHitBlock)
+        {
+            lastHitBlock = hit.blockPos;
+            breakProgress = 0.0f;
+        }
+        breakProgress += deltaTime;
+
+        int chunkX = static_cast<int>(std::floor(static_cast<float>(hit.blockPos.x) / CHUNK_X));
+        int chunkZ = static_cast<int>(std::floor(static_cast<float>(hit.blockPos.z) / CHUNK_Z));
+
+        auto it = world.find(ChunkKey{chunkX, chunkZ});
+        if (it == world.end()) return;
+
+        Block block = it->second->blocks[blockIndex(chunkX, hit.blockPos.y, chunkZ)];
+
+        if (block.blockType == AIR) return;
+
+        float breakTime = block.hardness / getMiningSpeed(block, &IRON_PICKAXE);
+        std::cout << breakTime << "|" << block.blockType << "\n";
+        if (breakProgress >= breakTime)
+        {
+            tryDestroyBlock(camera.cameraPos, world, hit);
+            breakProgress = 0.0f;
+        }
+    }
 }
